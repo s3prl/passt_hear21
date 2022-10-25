@@ -251,9 +251,6 @@ class Mlp(nn.Module):
         return x
 
 
-first_RUN = True
-
-
 class PatchEmbed(nn.Module):
     """ 2D Image to Patch Embedding
     """
@@ -276,14 +273,13 @@ class PatchEmbed(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.shape
-        if not (H == self.img_size[0] and W == self.img_size[1]):
-            warnings.warn(f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]}).")
+        # if not (H == self.img_size[0] and W == self.img_size[1]):
+        #     warnings.warn(f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]}).")
         # to do maybe replace weights
         x = self.proj(x)
         if self.flatten:
             x = x.flatten(2).transpose(1, 2)  # BCHW -> BNC
         x = self.norm(x)
-        if first_RUN: print("self.norm(x)", x.size())
         return x
 
 
@@ -457,59 +453,46 @@ class PaSST(nn.Module):
             self.head_dist = nn.Linear(self.embed_dim, self.num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x):
-        global first_RUN  # not jit friendly? use trace instead
         x = self.patch_embed(x)  # [b, e, f, t]
         B_dim, E_dim, F_dim, T_dim = x.shape  # slow
-        if first_RUN: print(" patch_embed : ", x.shape)
         # Adding Time/Freq information
-        if first_RUN: print(" self.time_new_pos_embed.shape", self.time_new_pos_embed.shape)
         time_new_pos_embed = self.time_new_pos_embed
         if x.shape[-1] != time_new_pos_embed.shape[-1]:
             time_new_pos_embed = time_new_pos_embed[:, :, :, :x.shape[-1]]
-            if first_RUN: print(" CUT time_new_pos_embed.shape", time_new_pos_embed.shape)
         x = x + time_new_pos_embed
-        if first_RUN: print(" self.freq_new_pos_embed.shape", self.freq_new_pos_embed.shape)
         x = x + self.freq_new_pos_embed
 
         # Structured Patchout https://arxiv.org/abs/2110.05069 Section 2.2
         if self.training and self.s_patchout_t:
-            if first_RUN: print(f"X Before time Patchout of {self.s_patchout_t} ", x.size())
             # ([1, 768, 1, 82])
             random_indices = torch.randperm(T_dim)[:T_dim - self.s_patchout_t].sort().values
             x = x[:, :, :, random_indices]
-            if first_RUN: print("X after time Patchout", x.size())
         if self.training and self.s_patchout_f:
-            if first_RUN: print(f"X Before Freq Patchout of {self.s_patchout_f} ", x.size())
             # [1, 768, 12, 1]
             random_indices = torch.randperm(F_dim)[:F_dim - self.s_patchout_f].sort().values
             x = x[:, :, random_indices, :]
-            if first_RUN: print(" \n X after freq Patchout: ", x.size())
+
         ###
         # Flatten the sequence
         x = x.flatten(2).transpose(1, 2)
         # Unstructured Patchout
-        if first_RUN: print("X flattened", x.size())
+
         if self.training and self.u_patchout:
             seq_len = x.shape[1]
             random_indices = torch.randperm(seq_len)[:seq_len - self.u_patchout].sort().values
             x = x[:, random_indices, :]
-            if first_RUN: print("X After Unstructured Patchout", x.size())
+
         ####
         # Add the C/D tokens
-        if first_RUN: print(" self.new_pos_embed.shape", self.new_pos_embed.shape)
         cls_tokens = self.cls_token.expand(B_dim, -1, -1) + self.new_pos_embed[:, :1, :]
-        if first_RUN: print(" self.cls_tokens.shape", cls_tokens.shape)
         if self.dist_token is None:
             x = torch.cat((cls_tokens, x), dim=1)
         else:
             dist_token = self.dist_token.expand(B_dim, -1, -1) + self.new_pos_embed[:, 1:, :]
-            if first_RUN: print(" self.dist_token.shape", dist_token.shape)
             x = torch.cat((cls_tokens, dist_token, x), dim=1)
 
-        if first_RUN: print(" final sequence x", x.shape)
         x = self.pos_drop(x)
         x = self.blocks(x)
-        if first_RUN: print(f" after {len(self.blocks)} atten blocks x", x.shape)
         x = self.norm(x)
         if self.dist_token is None:
             return self.pre_logits(x[:, 0])
@@ -517,24 +500,16 @@ class PaSST(nn.Module):
             return x[:, 0], x[:, 1]
 
     def forward(self, x):
-        global first_RUN
-        if first_RUN: print("x", x.size())
-
         x = self.forward_features(x)
 
         if self.head_dist is not None:
             features = (x[0] + x[1]) / 2
-            if first_RUN: print("forward_features", features.size())
             x = self.head(features)
-            if first_RUN: print("head", x.size())
-            first_RUN = False
             return x, features
         else:
             features = x
-            if first_RUN: print("forward_features", features.size())
             x = self.head(x)
-        if first_RUN: print("head", x.size())
-        first_RUN = False
+
         return x, features
 
 
@@ -689,7 +664,6 @@ def deit_base_distilled_patch16_384(pretrained=False, **kwargs):
     """ DeiT-base distilled model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
-    print("\n\n Loading DEIT BASE 384\n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'deit_base_distilled_patch16_384', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -700,7 +674,6 @@ def passt_s_swa_p16_128_ap476(pretrained=False, **kwargs):
     """ DeiT-base distilled model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
-    print("\n\n Loading PASST TRAINED ON AUDISET \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'passt_s_swa_p16_128_ap476', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -709,7 +682,6 @@ def passt_s_swa_p16_128_ap476(pretrained=False, **kwargs):
 def passt_s_p16_s16_128_ap468(pretrained=False, **kwargs):
     """ PaSST pre-trained on AudioSet
     """
-    print("\n\n Loading PaSST pre-trained on AudioSet Patch 16 stride 16 structured patchout mAP=472 \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     if model_kwargs.get("stride") != (16, 16):
         warnings.warn(
@@ -723,7 +695,6 @@ def passt_s_swa_f128_stfthop100_p16_s10_ap473(pretrained=False, **kwargs):
     """ DeiT-base distilled model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
-    print("\n\n Loading PASST TRAINED ON AUDISET, with STFT hop of 100 \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'passt_s_swa_f128_stfthop100_p16_s10_ap473', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -733,7 +704,6 @@ def passt_s_swa_f128_stfthop160_p16_s10_ap473(pretrained=False, **kwargs):
     """ DeiT-base distilled model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
-    print("\n\n Loading PASST TRAINED ON AUDISET, with STFT hop of 160 \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'passt_s_swa_f128_stfthop160_p16_s10_ap473', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -743,7 +713,6 @@ def openmic2008_passt_u_f128_p16_s10_ap85_swa(pretrained=False, **kwargs):
     """ DeiT-base distilled model @ 384x384 from paper (https://arxiv.org/abs/2012.12877).
     ImageNet-1k weights from https://github.com/facebookresearch/deit.
     """
-    print("\n\n Loading PASST TRAINED ON OpenMIC-2008 \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'openmic2008_passt_u_f128_p16_s10_ap85_swa', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -752,7 +721,6 @@ def openmic2008_passt_u_f128_p16_s10_ap85_swa(pretrained=False, **kwargs):
 
 
 def passt_s_f128_20sec_p16_s10_ap474_swa(pretrained=False, **kwargs):
-    print("\n\n Loading PASST TRAINED ON AUDISET with 20 Second time encodings, with STFT hop of 160 \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'passt-s-f128-20sec-p16-s10-ap474-swa', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -760,7 +728,6 @@ def passt_s_f128_20sec_p16_s10_ap474_swa(pretrained=False, **kwargs):
 
 
 def passt_s_f128_30sec_p16_s10_ap473_swa(pretrained=False, **kwargs):
-    print("\n\n Loading PASST TRAINED ON AUDISET with 30 Second time encodings, with STFT hop of 160 \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'passt-s-f128-30sec-p16-s10-ap473-swa', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -768,7 +735,6 @@ def passt_s_f128_30sec_p16_s10_ap473_swa(pretrained=False, **kwargs):
 
 
 def passt_b_f128_p16_s16_ap_459(pretrained=False, **kwargs):
-    print("\n\n Loading PASST BASE TRAINED ON AUDISET with NO patchout \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'passt_b_f128_p16_s16_ap_459', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -776,7 +742,6 @@ def passt_b_f128_p16_s16_ap_459(pretrained=False, **kwargs):
 
 
 def passt_u600_f128_p16_s16_ap_460(pretrained=False, **kwargs):
-    print("\n\n Loading PASST-U TRAINED ON AUDISET with Unstructured patchout \n\n")
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer(
         'passt_u600_f128_p16_s16_ap_460', pretrained=pretrained, distilled=True, **model_kwargs)
@@ -838,12 +803,11 @@ def get_model(arch="passt_s_swa_p16_128_ap476", pretrained=True, n_classes=527, 
         model_func = passt_u600_f128_p16_s16_ap_460
     elif arch == "passt_b_f128_p16_s16_ap_459":  # pretrained
         model_func = passt_b_f128_p16_s16_ap_459
-        
+
     if model_func is None:
         raise RuntimeError(f"Unknown model {arch}")
     model = model_func(pretrained=pretrained, num_classes=n_classes, in_chans=in_channels,
                        img_size=input_size, stride=stride, u_patchout=u_patchout,
                        s_patchout_t=s_patchout_t, s_patchout_f=s_patchout_f)
     model = fix_embedding_layer(model)
-    print(model)
     return model

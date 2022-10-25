@@ -25,9 +25,10 @@ class AugmentMelSTFT(nn.Module):
         self.sr = sr
         self.htk = htk
         self.fmin = fmin
+
         if fmax is None:
             fmax = sr // 2 - fmax_aug_range // 2
-            print(f"Warning: FMAX is None setting to {fmax} ")
+
         self.fmax = fmax
         self.norm = norm
         self.hopsize = hopsize
@@ -63,7 +64,6 @@ class AugmentMelSTFT(nn.Module):
             fmin = self.fmin
             fmax = self.fmax
 
-
         mel_basis, _ = torchaudio.compliance.kaldi.get_mel_banks(self.n_mels,  self.n_fft, self.sr,
                                         fmin, fmax, vtln_low=100.0, vtln_high=-500., vtln_warp_factor=1.0)
         mel_basis = torch.as_tensor(torch.nn.functional.pad(mel_basis, (0, 1), mode='constant', value=0),
@@ -85,4 +85,3 @@ class AugmentMelSTFT(nn.Module):
         return 'winsize={}, hopsize={}'.format(self.win_length,
                                                self.hopsize
                                                )
-
